@@ -1,4 +1,4 @@
-# TeacherAboveMllmBelow : kinematics-grading
+# kinematics-graph-grading-StressTesting
 
 A reusable framework for **reverse-generation stress testing of MLLM-based
 grading assistants**: instead of asking "is this answer correct?", it asks
@@ -13,6 +13,121 @@ repository ships a full, tested, runnable implementation of that pipeline
 for a set of kinematics-graph reading exercises, plus everything needed to
 adapt it to grade your own material or stress-test a different grading
 assistant.
+
+## Reproduce the results step by step
+
+Follow these steps in order. Every command is run from the repository root.
+
+### 1. Get the code and install it
+
+```bash
+git clone https://github.com/zammelRocks/kinematics-graph-grading-StressTesting.git
+cd kinematics-graph-grading-StressTesting
+python -m venv venv
+venv\Scripts\activate          # Windows
+# source venv/bin/activate     # macOS / Linux
+pip install -e .[dev,reports]
+pytest                         # optional: check the install (no API key needed)
+```
+
+### 2. Check the study material (`data/`)
+
+Nothing to do here; this is the input to every later step. Each of the four
+exercises has three files in `data/exercice_<N>/`:
+
+| File | What it is |
+|---|---|
+| `correct_<N>.png` | the reference graph (also the target of every morph) |
+| `instruction_<N>.txt` | the exercise text sent to the grader |
+| `rubric_<N>.json` | the rubric sent to the grader: one rule per criterion (quantity, relation, threshold, points) |
+
+### 3. Add your own grader credentials
+
+```bash
+copy .env.example .env         # Windows   (macOS / Linux: cp .env.example .env)
+```
+
+Open `.env` and fill in `API_KEY`, `ENDPOINT` and `DEPLOYMENT` for your own
+Azure OpenAI (or compatible) vision deployment. `.env` is listed in
+`.gitignore` and must never be committed. No keys are stored in this
+repository.
+
+### 4. Generate the image sequences (local, no API calls)
+
+```bash
+python -m kinematics_grading generate --out output/generated --optuna-dir output/optuna_logs
+```
+
+This writes 4 exercises x 3 rounds x 100 sequences (split across the
+3 donor exercises; 1,200 sequences in total) to `output/generated/exercice_<N>/round_<R>/from_correct_<D>/instance_<NNN>/`.
+Each sequence has the donor graph (`00_...png`), five transformed steps
+(`01_...png` to `05_...png`, the only graded images) and the reference
+(`06_reference_answer.png`). Settings are in `config/default.yaml`.
+
+### 5. Grade every step (API calls, uses your `.env`)
+
+The paper's reverse-direction examples use the **standalone_submission**
+policy (no reference graph, no step progress given to the grader):
+
+```bash
+python -m kinematics_grading grade --generated output/generated \
+  --out output/grading_results_standalone --partial-credit-policy standalone_submission --retry-until-clean
+```
+
+Optional, for the policy comparison (reference graph and step progress given):
+
+```bash
+python -m kinematics_grading grade --generated output/generated \
+  --out output/grading_results --retry-until-clean
+```
+
+Each run writes one line per graded image to
+`<out>/intermediate_step_rule_grades.jsonl`: the score, and for every rubric
+rule the points awarded, `observed` and `partial_credit_reason` (the grader's
+own explanations). The exact prompts are in
+`src/kinematics_grading/grading/prompts.py`.
+
+### 6. Compute the statistics
+
+```bash
+python -m kinematics_grading analyze --grading-results output/grading_results_standalone \
+  --out output/analysis_standalone
+```
+
+This writes acceptance, per-step pass rates, first accepted step,
+partial credit and confusing / robust-to-noise CSVs to the `--out` folder.
+For charts, open `notebooks/statistical_analysis.ipynb` (step_calibrated run)
+and `notebooks/standalone_submission_analysis.ipynb` (standalone run and the
+comparison of both policies).
+
+### 7. Draw the grade schematics (`deterministic_plotting/`)
+
+Open `deterministic_plotting/deterministic_plotting.ipynb` in Jupyter or
+VS Code and run all cells, with the repository root as the working directory. The
+notebook reads `output/grading_results_standalone/intermediate_step_rule_grades.jsonl`,
+draws 5 graded images with a fixed seed (42), and passes each image's
+per-rule verdicts to `deterministic_plotting/schematic_plot.py`. That
+script draws one segment per rubric rule, colored red-to-green by the
+fraction of points awarded, and lists the grader's `observed` and
+`partial_credit_reason` under it. Output:
+`deterministic_plotting/figures/sample_<k>_ex<N>_instance_<NNN>_<step>.png`.
+The schematic is a summary of the recorded grades, not a reconstruction of
+the image.
+
+### What is and is not exactly reproducible
+
+- **Steps 1, 2, 6 and 7** give identical results for the same input files.
+- **Step 4**: each sequence uses a fixed seed, but the Optuna search is not
+  seeded, so a new run produces similar, not identical, images.
+- **Step 5**: an LLM grader does not return identical scores on every call,
+  and results depend on the deployment used. A new run will differ in detail
+  from the paper.
+- The grading outputs used in the paper (`output/`) are not in this
+  repository. The figures in `deterministic_plotting/figures/` are the ones
+  produced from them: `sample_1` to `sample_5` by step 7; the other files in
+  that folder (`confusing_robust_samples/`, `acc_ambiguity_montage.png`,
+  `framework_diagram.png`) were produced outside this notebook and are
+  included for reference.
 
 ## Gap
 
@@ -157,8 +272,8 @@ the `generate` step.
 ## Quickstart
 
 ```bash
-git clone https://github.com/zammelRocks/TeacherAboveMllmBelow.git
-cd TeacherAboveMllmBelow
+git clone https://github.com/zammelRocks/kinematics-graph-grading-StressTesting.git
+cd kinematics-graph-grading-StressTesting
 python -m venv venv && source venv/bin/activate   # or venv\Scripts\activate on Windows
 pip install -e .[dev,reports]
 cp .env.example .env   # fill in API_KEY / ENDPOINT / DEPLOYMENT
@@ -260,6 +375,9 @@ src/kinematics_grading/
 tests/                        pytest suite, no network/GPU required for all but a handful of integration tests
 scripts/run_smoke_test.py     small, real end-to-end run against your configured endpoint
 notebooks/                    ready-to-run analysis notebooks (pip install -e .[reports])
+deterministic_plotting/       schematic_plot.py + a notebook that sketches a sample of
+                               graded images' own rubric-rule verdicts (quantity/relation/
+                               expected/satisfied) as deterministic threshold plots
 ```
 
 ## Design notes
